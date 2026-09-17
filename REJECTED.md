@@ -28,3 +28,6 @@ rejection here can be reopened with new evidence.
 - **Second, counter-0 BLAKE3 per block.** Would only catch shifts that are multiples of 64 KiB.
 - **Trusting SLAKE3 sub-block hits without a source read.** Moot once tree levels were dropped.
 - **LRU for any cache.** Collapses under specific load patterns; see AGENTS.md.
+- **Vector hash-prefilter to pick anchor candidates, then scalar max test.** Prefilter alone is
+  alignment-free, but density control on its survivors reintroduces grid segments or the max test.
+  The van Herk sliding max computes the exact definition directly at similar cost.

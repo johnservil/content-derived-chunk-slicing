@@ -71,6 +71,11 @@ holes") comes later.
   The spacing bounds follow from the definition (two maxima cannot lie within *h* of each other).
   One comparison per byte, no table. A bijective mix (odd multiply) would make density
   distribution-independent — a tuning knob.
+- **Anchors vectorize without changing the definition.** The local-max test for all positions is a
+  sliding-window maximum; van Herk / Gil–Werman computes it in three passes (segment prefix-max,
+  segment suffix-max, combine) with no cross-lane dependency chain. Over 64-bit lanes on 512-bit
+  vectors: ~25 K vector ops per 64 KiB block ≈ 10 µs, bit-identical to the scalar AE result. The
+  benchmark may use the scalar loop; the fast path exists.
 - **SLAKE3 for block keys.** BLAKE3's chunk counter makes identical bytes at different offsets hash
   differently; counter 0 removes that, and 4 rounds suffice for an internal hash. BLAKE3 remains for
   client-visible proofs.
