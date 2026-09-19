@@ -507,7 +507,7 @@ class Fixed:
 _GEAR = [struct.unpack('<Q', hashlib.blake2b(bytes([i]), digest_size=8).digest())[0] for i in range(256)]
 
 class CDC:
-    name = 'cdc8K'
+    name = 'cdc'
     def __init__(self, avg=8192, mn=2048, mx=65536):
         self.mask = avg - 1; self.mn, self.mx = mn, mx
         self.seen = set(); self.in_bytes = 0; self.lit_bytes = 0; self.n = 0
@@ -535,6 +535,123 @@ class CDC:
                     meta=meta, meta_pct=100 * meta / self.in_bytes, chunks=len(self.seen))
 
 # --------------------------------------------------------------------------------------------
+# CDC + slices: the competitor exactly, plus one step on chunk misses. A missed chunk is compared
+# (walk at shift 0 + gram search) against the stored chunks that sit between its neighbours' sources
+# in the same old file. Equal runs become slices; only the differing bytes are stored as new chunks.
+
+def gear_chunks(data, mask, mn, mx):
+    """Yield (start, end) content-defined chunk boundaries."""
+    n = len(data); start = 0; G = _GEAR
+    while start < n:
+        h = 0; end = min(n, start + mx)
+        p = min(start + mn, end)
+        for q in range(start, p):
+            h = ((h << 1) + G[data[q]]) & 0xFFFFFFFFFFFFFFFF
+        while p < end:
+            h = ((h << 1) + G[data[p]]) & 0xFFFFFFFFFFFFFFFF
+            p += 1
+            if (h & mask) == 0:
+                break
+        yield start, p
+        start = p
+
+class CDCSlices:
+    name = 'cdc+slices'
+    def __init__(self, avg=8192, mn=2048, mx=65536, minslice=256, lookahead=1):
+        self.mask = avg - 1; self.mn, self.mx = mn, mx
+        self.minslice = minslice; self.lookahead = lookahead
+        self.avg = avg
+        self.blockfile = open('/workspace/data/bench_cdcs.bin', 'w+b'); self.blockfile.truncate(0)
+        self.chunks = {}        # chunk_id -> (file offset, len)
+        self.key_to_id = {}     # chunk hash -> chunk_id
+        self.next_id = 0
+        self.in_bytes = 0; self.lit_bytes = 0
+        self.n_chunks = 0; self.n_refs = 0; self.n_slices = 0; self.n_inchunks = 0
+        self.n_misses = 0; self.n_walks = 0; self.n_rescued = 0
+        self.hist = defaultdict(lambda: [0, 0])
+
+    def _store(self, data):
+        k = block_key(data)
+        cid = self.key_to_id.get(k)
+        if cid is not None:
+            return cid, False
+        cid = self.next_id; self.next_id += 1
+        self.blockfile.seek(0, 2); self.chunks[cid] = (self.blockfile.tell(), len(data))
+        self.blockfile.write(data); self.key_to_id[k] = cid
+        self.n_chunks += 1; self.lit_bytes += len(data)
+        return cid, True
+
+    def _read(self, cid):
+        off, ln = self.chunks[cid]
+        self.blockfile.seek(off); return self.blockfile.read(ln)
+
+    def ingest(self, data):
+        self.in_bytes += len(data)
+        bounds = list(gear_chunks(data, self.mask, self.mn, self.mx))
+        # pass 1: look up every chunk; record hits (stored chunk id) and misses
+        hits = []
+        for (a, b) in bounds:
+            k = block_key(data[a:b]); self.n_inchunks += 1
+            hits.append(self.key_to_id.get(k))
+        # pass 2: emit refs for hits; for misses, try neighbours' sources
+        for i, (a, b) in enumerate(bounds):
+            if hits[i] is not None:
+                self.n_refs += 1
+                continue
+            self.n_misses += 1
+            inc = data[a:b]
+            # candidate sources: chunks after the previous hit / before the next hit in the store.
+            # Stored chunk ids are sequential per ingest, so "between c and c'" = ids c+1 .. c'-1.
+            cands = []
+            prev_hit = next((hits[j] for j in range(i - 1, max(-1, i - 1 - self.lookahead), -1) if hits[j] is not None), None)
+            next_hit = next((hits[j] for j in range(i + 1, min(len(bounds), i + 1 + self.lookahead)) if hits[j] is not None), None)
+            if prev_hit is not None and next_hit is not None and next_hit > prev_hit and next_hit - prev_hit <= 8:
+                cands = list(range(prev_hit + 1, next_hit))
+            elif prev_hit is not None:
+                cands = [prev_hit + 1]
+            elif next_hit is not None and next_hit > 0:
+                cands = [next_hit - 1]
+            cands = [c for c in cands if c in self.chunks]
+            slices = []
+            if cands:
+                window = [(c, self._read(c)) for c in cands]
+                self.n_walks += len(window)
+                # walk at shift 0 against each candidate (aligned by construction) + gram search
+                runs = {}
+                for cid, src in window:
+                    r = walk(inc, src, 0, self.minslice)
+                    gsl, _ = find_matches(inc, [(cid, src)], self.minslice)
+                    r += [(so, do, L) for _, so, do, L in gsl]
+                    if r:
+                        runs[cid] = r
+                slices = merge_cover(runs)
+            matched = sum(sl[3] for sl in slices)
+            if slices:
+                self.n_rescued += 1
+            for _, _, _, L in slices:
+                bkt = L.bit_length() - 1
+                self.hist[bkt][0] += 1; self.hist[bkt][1] += L
+            self.n_slices += len(slices)
+            # store the residue as new chunk(s): each uncovered run becomes one chunk
+            pos = 0
+            for _, _, d0, L in sorted(slices, key=lambda t: t[2]):
+                if d0 > pos:
+                    self._store(inc[pos:d0]); self.n_refs += 1
+                pos = d0 + L
+            if pos < len(inc):
+                self._store(inc[pos:]); self.n_refs += 1
+
+    def report(self):
+        meta = self.n_chunks * 36 + self.n_refs * 16 + self.n_slices * 20
+        return dict(stored=self.lit_bytes, ratio=self.lit_bytes / self.in_bytes,
+                    meta=meta, meta_pct=100 * meta / self.in_bytes,
+                    chunks=self.n_chunks, refs=self.n_refs, slices=self.n_slices,
+                    entries_per_64k=(self.n_refs + self.n_slices) / (self.in_bytes / BLOCK),
+                    miss_rate=self.n_misses / self.n_inchunks,
+                    rescued_of_misses=self.n_rescued / max(1, self.n_misses),
+                    walks_per_miss=self.n_walks / max(1, self.n_misses))
+
+# --------------------------------------------------------------------------------------------
 
 def fmt(n):
     for unit in ('B', 'KiB', 'MiB', 'GiB'):
@@ -552,6 +669,7 @@ def main():
     ap.add_argument('--no-baselines', action='store_true')
     ap.add_argument('--systems', default='hybrid', help='comma list: hybrid,sliced,sync')
     ap.add_argument('--sync-h', type=int, default=8192, help='sync-point half-window (bytes)')
+    ap.add_argument('--cdc-avg', type=int, default=8192, help='CDC average chunk size')
     a = ap.parse_args()
     assert BLOCK & (BLOCK - 1) == 0 and a.minslice >= GRAM
 
@@ -567,6 +685,8 @@ def main():
     if 'sliced' in a.systems: systems.append(Sliced(a.h, a.minslice, a.window))
     if 'sync' in a.systems: systems.append(Sync(a.sync_h, a.minslice))
     if 'hybrid' in a.systems: systems.append(Hybrid(a.h, a.minslice, a.window))
+    if 'cdcs' in a.systems: systems.append(CDCSlices(a.cdc_avg, a.cdc_avg // 4, min(65536, a.cdc_avg * 8), a.minslice))
+    if 'cdc' in a.systems: systems.append(CDC(a.cdc_avg, a.cdc_avg // 4, min(65536, a.cdc_avg * 8)))
     if not a.no_baselines:
         systems += [Fixed(), CDC()]
 
@@ -584,7 +704,7 @@ def main():
     for s in systems:
         r = s.report()
         line = f'{s.name:>9}: stored={fmt(r["stored"]):>9} ratio={r["ratio"]:.4f} meta={fmt(r["meta"]):>9} ({r["meta_pct"]:.3f}%)'
-        for k in ('index', 'slices', 'slices_per_64k', 'blocks', 'chunks', 'lookups_per_block', 'cands_per_block', 'walks_per_block', 'false_per_block'):
+        for k in ('index', 'slices', 'slices_per_64k', 'blocks', 'chunks', 'refs', 'entries_per_64k', 'miss_rate', 'rescued_of_misses', 'walks_per_miss', 'lookups_per_block', 'cands_per_block', 'walks_per_block', 'false_per_block'):
             if k in r:
                 v = r[k]; line += f' {k}={v:.2f}' if isinstance(v, float) else f' {k}={v}'
         print(line)
