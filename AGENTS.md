@@ -61,6 +61,8 @@ Use exactly these terms in code, comments, docs, and conversation.
 # Environment
 
 - `curl` works (`curl -sSL <url> | sed 's/<[^>]*>//g'` reads a page as text). If TLS fails with "certificate is not yet valid", run `hwclock -s` and retry.
+- After a VM reboot run `bash scripts/guest-setup.sh` once: fixes the clock, sets git config, installs pypy3 + zstd, re-fetches missing data sets. In each fresh shell, `export GIT_CONFIG_GLOBAL=/tmp/gitconfig` before using git.
+- Benchmark: `pypy3 bench.py data/rebuild --systems cdcs,cdc` (or `data/nars`); see `bench.py --help`.
 - Reference docs: Xet spec https://www.ietf.org/archive/id/draft-denis-xet-05.html ; Lore design https://epicgames.github.io/lore/explanation/system-design/
 
 # Working Habits
