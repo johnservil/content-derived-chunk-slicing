@@ -31,3 +31,22 @@ rejection here can be reopened with new evidence.
 - **Vector hash-prefilter to pick anchor candidates, then scalar max test.** Prefilter alone is
   alignment-free, but density control on its survivors reintroduces grid segments or the max test.
   The van Herk sliding max computes the exact definition directly at similar cost.
+
+## Rejected 2026-09-19 (measured)
+
+- **Fixed 64 KiB blocks as the storage unit, with a separate finder.** The separation itself is
+  sound, but every finder we built was sparser than CDC's own chunk hashes and failed all-or-nothing
+  per block. Result: ratio 0.56 vs cdc 0.45 on rebuild data. CDC chunk hashes *are* the cheapest
+  exhaustive finder; keep them.
+- **MAXP / local-maximum anchor words as index keys.** On machine code the max 8-byte word is
+  usually an address or an ASCII store-path hash — exactly the bytes a rebuild rewrites. 16% of
+  blocks had every anchor on changed bytes.
+- **SLAKE3 (counter-0, 4-round BLAKE3) as block key.** Needed only because of fixed blocks; gone
+  with them. Block/chunk ids are plain BLAKE3, as the colleague already has.
+- **Sync design (1 KiB strong keys at anchor positions + lockstep walk).** Cheapest read path
+  (2.3 slices/64 KiB) but ratio 0.89 vs 0.65: keys landed on volatile bytes and found only long runs.
+- **Hybrid (anchor shift hypotheses + walk + gram search on one candidate).** Best of the fixed-block
+  family (0.71 on systemd, 0.56 on rebuild) and still behind cdc 8 KiB. Its walk + gram search
+  survives as the miss handler's comparison step.
+- **Voting over anchor hits; multi-slot index entries; IDF-style popular-key suppression.** Wrinkles
+  on a mechanism that was replaced.

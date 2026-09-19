@@ -44,19 +44,17 @@ Caches evict by **random replacement, never LRU**. LRU collapses under specific 
 
 Use exactly these terms in code, comments, docs, and conversation.
 
-- **Block** — fixed 64 KiB unit of literal storage; unit of refcount/GC. Content-addressed by its **block key**, the SLAKE3 hash of its bytes.
-- **Slice** — a manifest entry `(block key, offset, len)`: a byte range of a stored block.
-- **Manifest** — a file's ordered list of slices. Reconstructing a file costs one range read per slice.
-- **Ingest** — take in a file: find matches, store new literal bytes as blocks, write the manifest. **Reconstruct** — the reverse.
-- **SLAKE3** — BLAKE3 with chunk counter fixed to 0 and 4 rounds. Internal content hash for block keys; never exposed.
+- **Content-Defined Chunking (CDC)** — splitting a byte stream at positions determined by a rolling hash of its content. **Boundary** — such a position. **Chunk** — the bytes between two boundaries.
+- **Chunk hash** — BLAKE3 of a chunk's bytes; the chunk's id in the **chunk store** (content-addressed, refcounted; `put`/`get`).
+- **Manifest** — a file's ordered list of entries, each a whole-chunk reference or a **slice** `(chunk hash, offset, len)`. Reconstructing a file costs one range read per entry.
+- **Ingest** — take in a file: chunk, look up, run the miss handler, store new chunks, write the manifest. **Reconstruct** — the reverse.
+- **Miss handler** — for a chunk whose hash misses: compare it (lockstep walk at shift 0 + gram search) against the stored chunks between its neighbours' sources; emit slices for equal runs ≥ `minslice`, store the rest.
 - **Bao proof** — BLAKE3 tree nodes proving a byte range belongs to a file; served on request.
-- **Anchor** — a position whose 8-byte word is the strict maximum within *h* bytes on either side (MAXP/AE local-maximum sampling). Content-defined, hash-free. The word is the index key.
-- **Candidate** — a stored block that anchor votes select as a likely match source. **Window** — the small set of candidate blocks the match finder searches.
-- **Match finder** — LZ77-style search of an incoming block against the window; emits slices for matches ≥ ~32 B, literals otherwise.
+- **Rebuild corpus / nars corpus** — the two test data sets under `data/`; see DESIGN.md.
 
 # System-wide Preconditions
 
-- SLAKE3 is collision-free over all data this store will ever hold. Key equality *is* byte equality — relied upon, never checked.
+- BLAKE3 is collision-free over all data this store will ever hold. Chunk-hash equality *is* byte equality — relied upon, never checked.
 
 # Environment
 

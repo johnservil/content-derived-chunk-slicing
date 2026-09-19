@@ -1,121 +1,102 @@
 # Content-Derived Chunk Slicing — Design
 
-## Idea
+## Idea in one sentence
 
-The store holds fixed 64 KiB **blocks** of literal bytes, content-addressed. Each file has a
-**manifest**: an ordered list of **slices** `(block key, offset, len)`. Ingest carries all the
-deduplication work; storage and reads stay trivial. Ingest runs LZ77 over a window of a few stored
-blocks that a small index selects, so it matches exact duplicates, same-length edits, shifts of any
-length, and shared substrings down to ~32 B against the whole corpus.
+Keep classic Content-Defined Chunking exactly as the competitor has it, and add one entry type to
+the manifest: a **slice** `(chunk hash, offset, len)` that references a byte range of a stored
+chunk. When a chunk misses, compare it against its neighbours' sources and store only the bytes that
+differ.
 
 ## Requirements
 
 - API: `ingest(bytes) → file id`, `read(file id, range) → bytes`, `delete(file id)`.
-- The server answers `(file id, range) → bytes + Bao proof` (BLAKE3), by storing, regenerating,
-  or memoizing tree nodes as it sees fit.
-- Precondition (stated, never checked): SLAKE3 is collision-free; key equality is byte equality.
+- Server can answer `(file id, range) → bytes + Bao proof` (BLAKE3), by storing, regenerating, or
+  memoizing tree nodes as it sees fit.
+- Chunk ids are BLAKE3 hashes of chunk contents (what the colleague's system already does).
 
 ## Components
 
-1. **Block store.** 64 KiB blocks keyed by SLAKE3 hash, one refcount each, grouped into 4–8 MiB
-   **extents** for sequential writes and S3 objects. Rationale: 64 KiB clears every current SSD's
-   indirection unit, reads in the same latency as 4 KiB, and bounds the bytes a 1-byte slice keeps
-   alive.
-2. **Manifest.** Ordered slices. A read issues one `pread` per slice. Contract: `offset + len ≤ 64 KiB`.
-3. **Anchor index.** One hash table `anchor word → block key`, bucketed by SipHash-1-2 of the word.
-   Each stored block contributes its ~8 anchors (*h* = 4 KiB gives spacing ≥ 4 KiB guaranteed,
-   ~8 KiB expected). Entries ≈ 8 B ⇒ ≈ 0.1% of data. A per-file key list (≈ 0.01%) lets `delete`
-   remove exactly its entries. Full buckets evict by random replacement.
-4. **Match finder.** LZ77 over a window of ≤ ~4 blocks: build a 4/8-gram hash table over the window
-   (~20 µs per block), search the incoming block (~50–100 µs), emit slices ≥ 32 B and literals. The
-   window evicts by random replacement.
-5. **Proof service.** Store BLAKE3 parent nodes down to group size *G* (provisionally 1 MiB,
-   ≈ 0.003%); per request, rehash the enclosing *G* region with correct chunk counters (≤ 16 block
-   reads, ~0.3 ms) to regenerate lower nodes. Memoize in a random-replacement cache.
+1. **Chunker.** Gear rolling hash, min/avg/max = avg/4 / avg / min(64 KiB, 8·avg). Unchanged from
+   the competitor. Average size is the main open knob (see Results).
+2. **Chunk store.** Content-addressed by BLAKE3, one refcount per chunk. Unchanged.
+3. **Manifest.** Ordered entries, each either a whole-chunk reference or a slice
+   `(chunk hash, offset, len)`. A read issues one `pread` per entry. Contract: `offset + len ≤ chunk length`.
+4. **Miss handler** (the new part). For a chunk whose hash misses:
+   - Candidate sources = the stored chunks that sit *between* the sources of the nearest hit on
+     each side, in the store's sequential order (i.e. the old file's chunks that correspond to this
+     gap). With one neighbour hit, the single adjacent stored chunk.
+   - Compare the missed chunk against each candidate: lockstep walk at shift 0 (they are aligned by
+     construction, since the surrounding boundaries matched) plus an 8-gram LZ77 search for runs at
+     other shifts. Equal runs ≥ `minslice` become slices; the rest is stored as new chunk(s).
+   - No new index. No extra I/O beyond reading the candidate chunks (bounded by matched bytes).
+5. **BLAKE3 subtree dedup** (shared layer, applies equally to competitor and to us): the incoming
+   file's tree CVs at 64 KiB and up, indexed by CV → (file, offset), find unchanged aligned regions
+   at zero I/O. Credited to neither side in comparisons.
 
-All randomness comes from SipHash-1-2(seed, counter): secret seed in production, fixed seed in tests.
+## Results so far (bench.py, PyPy; see AGENTS.md for invocation)
 
-## Ingest, per 64 KiB of input
+Two real corpora from cache.nixos.org:
+- **rebuild** — 20 packages × (before, after) across one mass rebuild of nixos-25.05 (240 MiB).
+  19 of 20 pairs are byte-identical in length; changes are 32-char store-path rewrites.
+- **nars** — 17 packages × 4 releases 23.11 → 25.05 (1.1 GiB): real version changes.
 
-One streaming pass computes the block key (SLAKE3), BLAKE3 root and *G*-level nodes, and anchors.
-1. Look up the block key. On a hit, emit `(key, 0, 65536)` with zero I/O and stop.
-2. Look up the anchors; each hit votes for a block key. Take the top 1–3 as candidates.
-3. Form the window: candidates, plus the previous block's source and its successor.
-4. Run the match finder; emit slices for matches and literals for the rest. New literal bytes become
-   blocks (keyed, anchored, indexed). Write the manifest; bump refcounts.
+| corpus | system | ratio | metadata |
+|---|---|---|---|
+| rebuild | cdc 8 KiB | 0.450 | 0.26% |
+| rebuild | **cdc 8 KiB + slices** | **0.436** | 0.27% |
+| rebuild | fixed 64 KiB | 0.590 | 0.06% |
+| nars | cdc 8 KiB | 0.675 | 0.32% |
+| nars | fixed 64 KiB | 0.968 | 0.08% |
 
-**Ingester dials** (every setting yields a correct manifest): index only anchors whose word matches a
-bit pattern; query a subset of incoming anchors; keep a cold index tier on SSD and consult it only
-when idle; cap candidates; skip matching under load.
+Interpretation:
+- On rebuild data, 87% of 8 KiB chunks hit exactly; only 13% miss and most misses are isolated.
+  CDC at 8 KiB is already within ~10% of the floor there, so slices add 1.4 points. Where the
+  miss handler engages it does what was predicted: pangomm's one missed 42 KiB chunk (122 changed
+  bytes, one glib store hash) became 280 stored bytes + 2 slices instead of 42 KiB.
+- The remaining unrecovered bytes on rebuild are dominated by one file (nvidia-open: a 9 KiB size
+  change then a 708-chunk contiguous miss run). Neighbour-based candidates cannot help there; only
+  an index that finds shifted content can (see Open questions).
+- **The expected payoff of slices is coarser chunks, not a finer ratio at 8 KiB.** The competitor's
+  cost of 8 KiB chunks is metadata and reads (colleague's numbers: 55 MiB metadata / 1.5 M refs at
+  8 KiB vs 1.6 MiB / 164 k at 256 KiB). Slices make an edit cost ~300 B instead of one whole chunk,
+  which should let chunk size rise to 64–256 KiB with little ratio loss. **Not yet measured.**
 
-## Delete
+Colleague's table (his data, algorithms unknown), for orientation:
+exact/256KiB 1581 MiB, 1.6 MiB meta · exact/8KiB 1311 MiB, 55 MiB meta ·
+exact/1KiB 1551 MiB, 450 MiB meta · slices/1KiB/4 1047 MiB, 3.3 MiB meta.
 
-Drop the manifest, decrement referenced blocks' refcounts, and remove the file's anchor entries via
-its key list. Blocks die at refcount 0. Compaction of blocks kept alive by small slices ("liveness
-holes") comes later.
+## Cost measures (keep all four in view)
 
-## Costs per 64 KiB, one core
+1. Metadata construction at ingest (hashing, chunking) — per byte, fixed.
+2. Metadata storage — cheap in bytes; the *index* must fit RAM, manifests need not.
+3. Search cost at ingest — an ingester dial: it may skip the miss handler under load; every setting
+   yields a correct manifest.
+4. **Read cost** — one `pread` per manifest entry. Slices per 64 KiB is the number to watch;
+   `minslice` is its knob (sweep on systemd: 32 → 219/64 KiB, 128 → 28, 256 → 15, 512 → 15,
+   1024 → 5; ratio 0.640 → 0.652 → 0.670 → 0.686 → 0.769). **Knee at 256.**
 
-| Measure | Estimate |
-|---|---|
-| M1 metadata construction | BLAKE3 15–30 µs + SLAKE3 8–15 µs + anchor scan ~10 µs + match finder 50–100 µs ≈ **100–150 µs** (~0.5 GB/s per core; blocks parallelize) |
-| M2 metadata size | anchor index 0.1% + key lists 0.01% + refcounts 0.006% + BLAKE3 nodes 0.003% ≈ **0.12%** |
-| M3 search | ~8 lookups + ≤ 3 block reads per block; **0 on an exact duplicate** |
+## Open questions, in priority order
+
+1. **Chunk size with slices.** Run `--cdc-avg 65536` (and 262144) for both cdc and cdc+slices on
+   both corpora. Hypothesis: cdc's ratio degrades toward fixed-block levels while cdc+slices holds,
+   at 8–30× less metadata. This is the chart for the colleague.
+2. **Shifted-content finder for long miss runs** (the nvidia case). A second, optional mechanism:
+   index content-defined segment hashes → (chunk, offset) so a miss with no hit neighbours can still
+   locate its source at any shift. Measure how many bytes it addresses before building it.
+3. `minslice` and the entropy-coding of literal residue (deferred with zstd).
+4. Compaction of chunks kept alive by small slices.
 
 ## Rationale
 
-- **Storage layout is independent of match finding.** Chunk boundaries add nothing to a search that
-  extends across them. Karp–Rabin (1987) invented the rolling hash for substring search; LBFS (2001)
-  cut at its values and thereby tied storage granularity to index density. We untie them.
-- **Local-maximum anchors.** Any strict total order on words works; max is the identity order.
-  The spacing bounds follow from the definition (two maxima cannot lie within *h* of each other).
-  One comparison per byte, no table. A bijective mix (odd multiply) would make density
-  distribution-independent — a tuning knob.
-- **Anchors vectorize without changing the definition.** The local-max test for all positions is a
-  sliding-window maximum; van Herk / Gil–Werman computes it in three passes (segment prefix-max,
-  segment suffix-max, combine) with no cross-lane dependency chain. Over 64-bit lanes on 512-bit
-  vectors: ~25 K vector ops per 64 KiB block ≈ 10 µs, bit-identical to the scalar AE result. The
-  benchmark may use the scalar loop; the fast path exists.
-- **SLAKE3 for block keys.** BLAKE3's chunk counter makes identical bytes at different offsets hash
-  differently; counter 0 removes that, and 4 rounds suffice for an internal hash. BLAKE3 remains for
-  client-visible proofs.
-- **No zstd yet.** Range reads stay plain `pread`s and this layer's ratio is measured alone. Later:
-  entropy-code literal blocks; intra-block LZ77 by adding the incoming block to the window.
-- **Slices instead of stored deltas.** Shilane 2012, Ddelta, and DARE store deltas as deltas, which
-  forces recursive reads and chain-depth rules. Literal blocks keep reconstruction to one hop.
-
-## Adversarial inputs
-
-An attacker who controls file contents controls which words become anchors, and therefore which
-index keys and candidates our ingest sees. The design bounds every consequence:
-
-- **Index size and shape.** Local-max spacing caps anchors at 16 per block, so index growth is
-  ≤ 16 entries per 64 KiB ingested regardless of content. Buckets are chosen by keyed SipHash, so
-  an attacker cannot steer many keys into one bucket. Repeating one word many times steers many
-  *entries* onto one key — random replacement bounds that bucket's size, and the eviction pattern
-  stays unpredictable.
-- **Ingest CPU and I/O.** Per incoming block the work is bounded by construction: ≤ 16 lookups,
-  ≤ 3 candidate reads, one match-finder pass over ≤ 4 window blocks. Poisoning the index with
-  many blocks sharing an anchor word can at most make later lookups on that word yield useless
-  candidates, costing ≤ 3 wasted 64 KiB reads per block — the same cost as a plain miss plus reads,
-  and never a slowdown of another tenant's data.
-- **Correctness.** Match finder output is derived by comparing bytes; the index only proposes.
-  Wrong candidates degrade ratio for the attacker's own files and nothing else. The SLAKE3
-  collision-free precondition covers block keys; BLAKE3 proofs are computed from bytes.
-- **Information leakage.** A block-key hit reveals that identical 64 KiB bytes already exist in
-  the store (standard CAS side channel). Anchor hits reveal nothing to the client, since candidates
-  and slice counts never leave the server. Cross-tenant dedup timing is a deployment decision.
+- **Slices instead of stored deltas.** Shilane 2012, Ddelta, DARE store deltas as deltas, forcing
+  recursive reads and chain-depth rules. Literal chunks keep reconstruction to one hop.
+- **Neighbour sources instead of a new index.** The chunk hashes the competitor already computes are
+  the cheapest exhaustive finder there is: every unchanged ≥ 2·avg run is found at any shift. The
+  neighbours of a hit tell us where the miss's content lives; no anchor index is needed for the
+  common case.
+- **No zstd yet.** Range reads stay plain `pread`s; this layer's ratio is measured alone.
 
 ## Prior art
 
-Shilane et al. 2012 (similarity sketches + delta); Xia et al. Ddelta/DARE; FastCDC; Hugging Face
-Xet; Epic Lore; Prolly trees (Noms/Dolt), bup hashsplit; MAXP (Bjørner, Blass, Gurevich 2010), AE
-(Zhang et al. 2015); minimizers and strobemers (bioinformatics); VCDIFF, xdelta, `zstd --patch-from`.
-
-## Open questions, to be decided by data
-
-- Anchor spacing *h* and the votes-per-candidate threshold (set index size and false-candidate reads).
-- Window size and minimum slice length (32 B provisional).
-- *G* for BLAKE3 node storage; bijective anchor mix; entropy coding of literals; compaction.
-- **Experiment** (awaiting the Nix rebuild data set): measure slice vs. literal bytes on
-  (a) rebuild pairs and (b) version-history pairs, sweeping *h* and minimum slice length.
+Shilane et al. 2012; Xia et al. Ddelta / DARE (duplicate-adjacency, which the miss handler is);
+FastCDC; Hugging Face Xet; Epic Lore; VCDIFF, xdelta, `zstd --patch-from`.
