@@ -63,6 +63,10 @@ Use exactly these terms in code, comments, docs, and conversation.
 - `curl` works (`curl -sSL <url> | sed 's/<[^>]*>//g'` reads a page as text). If TLS fails with "certificate is not yet valid", run `hwclock -s` and retry.
 - Reference docs: Xet spec https://www.ietf.org/archive/id/draft-denis-xet-05.html ; Lore design https://epicgames.github.io/lore/explanation/system-design/
 
+# Working Habits
+
+- Run long commands in the foreground and wait for them to finish. Never `sleep`, never set a tool timeout, never poll: a guessed duration is always either too long (wasting the user's time) or too short (interrupting the work).
+
 # Project Files
 
 - `DESIGN.md` — current design, decisions, costs, open questions. Read it before design or coding work.
