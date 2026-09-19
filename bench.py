@@ -557,9 +557,10 @@ def gear_chunks(data, mask, mn, mx):
 
 class CDCSlices:
     name = 'cdc+slices'
-    def __init__(self, avg=8192, mn=2048, mx=65536, minslice=256, lookahead=1):
+    def __init__(self, avg=8192, mn=2048, mx=65536, minslice=256, lookahead=1, use_cv=True):
         self.mask = avg - 1; self.mn, self.mx = mn, mx
-        self.minslice = minslice; self.lookahead = lookahead
+        self.minslice = minslice; self.lookahead = lookahead; self.use_cv = use_cv
+        if not use_cv: self.name = 'cdc+slices(nocv)'
         self.avg = avg
         self.blockfile = open('/workspace/data/bench_cdcs.bin', 'w+b'); self.blockfile.truncate(0)
         self.chunks = {}        # chunk_id -> (file offset, len)
@@ -569,6 +570,13 @@ class CDCSlices:
         self.n_chunks = 0; self.n_refs = 0; self.n_slices = 0; self.n_inchunks = 0
         self.n_misses = 0; self.n_walks = 0; self.n_rescued = 0
         self.hist = defaultdict(lambda: [0, 0])
+        # BLAKE3-subtree stand-in: hash of each file-offset-aligned 64 KiB region -> list of
+        # (file_id, region_index, [chunk ids overlapping that region]). Position-dependent by
+        # construction (region index is part of the key), like real BLAKE3 CVs.
+        self.cv_index = {}
+        self.n_files = 0
+        self.n_cv_hits = 0; self.n_cv_rescued = 0
+        self.file_chunks = {}   # file_id -> list of (start, end, chunk_id) in file order
 
     def _store(self, data):
         k = block_key(data)
@@ -585,33 +593,58 @@ class CDCSlices:
         off, ln = self.chunks[cid]
         self.blockfile.seek(off); return self.blockfile.read(ln)
 
+    def _cv_candidates(self, data, a, b):
+        """Chunks of stored files that overlap a 64 KiB-aligned region whose CV matches one of the
+        regions overlapping [a, b) in the incoming file. Returns chunk ids (deduped, in order)."""
+        out = []
+        for r in range(a // BLOCK, (b - 1) // BLOCK + 1):
+            ra, rb = r * BLOCK, min(len(data), (r + 1) * BLOCK)
+            if rb - ra < BLOCK:
+                continue          # partial trailing region: no aligned 64 KiB CV
+            key = (r, block_key(data[ra:rb]))
+            hit = self.cv_index.get(key)
+            if hit is None:
+                continue
+            self.n_cv_hits += 1
+            fid = hit
+            for (ca, cb, cid) in self.file_chunks[fid]:
+                if ca < rb and ra < cb and cid not in out:
+                    out.append(cid)
+        return out
+
     def ingest(self, data):
         self.in_bytes += len(data)
+        fid = self.n_files; self.n_files += 1
         bounds = list(gear_chunks(data, self.mask, self.mn, self.mx))
         # pass 1: look up every chunk; record hits (stored chunk id) and misses
         hits = []
         for (a, b) in bounds:
             k = block_key(data[a:b]); self.n_inchunks += 1
             hits.append(self.key_to_id.get(k))
-        # pass 2: emit refs for hits; for misses, try neighbours' sources
+        layout = []
+        last_source = None   # source chunk id the previous chunk resolved to (by hit or by slices)
+        # pass 2: emit refs for hits; for misses, try lockstep source, neighbours, then CV candidates
         for i, (a, b) in enumerate(bounds):
             if hits[i] is not None:
-                self.n_refs += 1
+                self.n_refs += 1; layout.append((a, b, hits[i]))
+                last_source = hits[i]
                 continue
             self.n_misses += 1
             inc = data[a:b]
-            # candidate sources: chunks after the previous hit / before the next hit in the store.
-            # Stored chunk ids are sequential per ingest, so "between c and c'" = ids c+1 .. c'-1.
             cands = []
-            prev_hit = next((hits[j] for j in range(i - 1, max(-1, i - 1 - self.lookahead), -1) if hits[j] is not None), None)
+            if last_source is not None:
+                cands.append(last_source + 1)
             next_hit = next((hits[j] for j in range(i + 1, min(len(bounds), i + 1 + self.lookahead)) if hits[j] is not None), None)
-            if prev_hit is not None and next_hit is not None and next_hit > prev_hit and next_hit - prev_hit <= 8:
-                cands = list(range(prev_hit + 1, next_hit))
-            elif prev_hit is not None:
-                cands = [prev_hit + 1]
-            elif next_hit is not None and next_hit > 0:
-                cands = [next_hit - 1]
+            if next_hit is not None:
+                lo = last_source + 1 if last_source is not None else next_hit - 1
+                for c in range(lo, next_hit):
+                    if c not in cands and next_hit - c <= 8:
+                        cands.append(c)
             cands = [c for c in cands if c in self.chunks]
+            via_cv = False
+            if not cands and self.use_cv:
+                cands = self._cv_candidates(data, a, b)[:4]
+                via_cv = bool(cands)
             slices = []
             if cands:
                 window = [(c, self._read(c)) for c in cands]
@@ -628,6 +661,14 @@ class CDCSlices:
             matched = sum(sl[3] for sl in slices)
             if slices:
                 self.n_rescued += 1
+                if via_cv: self.n_cv_rescued += 1
+                # dominant source of this chunk carries the lockstep hypothesis forward
+                cover = {}
+                for sid, so, do, L in slices:
+                    cover[sid] = cover.get(sid, 0) + L
+                last_source = max(cover, key=cover.get)
+            else:
+                last_source = None
             for _, _, _, L in slices:
                 bkt = L.bit_length() - 1
                 self.hist[bkt][0] += 1; self.hist[bkt][1] += L
@@ -636,19 +677,28 @@ class CDCSlices:
             pos = 0
             for _, _, d0, L in sorted(slices, key=lambda t: t[2]):
                 if d0 > pos:
-                    self._store(inc[pos:d0]); self.n_refs += 1
+                    cid, _ = self._store(inc[pos:d0]); self.n_refs += 1; layout.append((a + pos, a + d0, cid))
                 pos = d0 + L
             if pos < len(inc):
-                self._store(inc[pos:]); self.n_refs += 1
+                cid, _ = self._store(inc[pos:]); self.n_refs += 1; layout.append((a + pos, b, cid))
+        # record this file's layout and its aligned-region CVs for future ingests
+        self.file_chunks[fid] = layout
+        if self.use_cv:
+            for r in range(len(data) // BLOCK):
+                key = (r, block_key(data[r * BLOCK:(r + 1) * BLOCK]))
+                if key not in self.cv_index:
+                    self.cv_index[key] = fid
 
     def report(self):
-        meta = self.n_chunks * 36 + self.n_refs * 16 + self.n_slices * 20
+        meta = self.n_chunks * 36 + self.n_refs * 16 + self.n_slices * 20 + (len(self.cv_index) * 40 if self.use_cv else 0)
         return dict(stored=self.lit_bytes, ratio=self.lit_bytes / self.in_bytes,
                     meta=meta, meta_pct=100 * meta / self.in_bytes,
                     chunks=self.n_chunks, refs=self.n_refs, slices=self.n_slices,
                     entries_per_64k=(self.n_refs + self.n_slices) / (self.in_bytes / BLOCK),
                     miss_rate=self.n_misses / self.n_inchunks,
                     rescued_of_misses=self.n_rescued / max(1, self.n_misses),
+                    cv_rescued_of_misses=self.n_cv_rescued / max(1, self.n_misses),
+                    cv_index_entries=len(self.cv_index),
                     walks_per_miss=self.n_walks / max(1, self.n_misses))
 
 # --------------------------------------------------------------------------------------------
@@ -670,6 +720,7 @@ def main():
     ap.add_argument('--systems', default='hybrid', help='comma list: hybrid,sliced,sync')
     ap.add_argument('--sync-h', type=int, default=8192, help='sync-point half-window (bytes)')
     ap.add_argument('--cdc-avg', type=int, default=8192, help='CDC average chunk size')
+    ap.add_argument('--json', default='', help='append a JSON line of results to this file')
     a = ap.parse_args()
     assert BLOCK & (BLOCK - 1) == 0 and a.minslice >= GRAM
 
@@ -685,8 +736,9 @@ def main():
     if 'sliced' in a.systems: systems.append(Sliced(a.h, a.minslice, a.window))
     if 'sync' in a.systems: systems.append(Sync(a.sync_h, a.minslice))
     if 'hybrid' in a.systems: systems.append(Hybrid(a.h, a.minslice, a.window))
-    if 'cdcs' in a.systems: systems.append(CDCSlices(a.cdc_avg, a.cdc_avg // 4, min(65536, a.cdc_avg * 8), a.minslice))
-    if 'cdc' in a.systems: systems.append(CDC(a.cdc_avg, a.cdc_avg // 4, min(65536, a.cdc_avg * 8)))
+    if 'cdcs' in a.systems: systems.append(CDCSlices(a.cdc_avg, a.cdc_avg // 4, a.cdc_avg * 8, a.minslice))
+    if 'cdcs-nocv' in a.systems: systems.append(CDCSlices(a.cdc_avg, a.cdc_avg // 4, a.cdc_avg * 8, a.minslice, use_cv=False))
+    if 'cdc' in a.systems: systems.append(CDC(a.cdc_avg, a.cdc_avg // 4, a.cdc_avg * 8))
     if not a.no_baselines:
         systems += [Fixed(), CDC()]
 
@@ -701,10 +753,20 @@ def main():
 
     print(f'\nfiles={len(files)} input={fmt(total)} h={a.h} sync_h={a.sync_h} minslice={a.minslice} window={a.window}  '
           f'time={time.time()-t0:.0f}s')
+    if a.json:
+        import json
+        rec = dict(roots=a.roots, only=a.only, files=len(files), input=total, cdc_avg=a.cdc_avg,
+                   minslice=a.minslice, seconds=round(time.time() - t0, 1),
+                   systems={s.name: {k: v for k, v in s.report().items()} for s in systems})
+        for s in systems:
+            if hasattr(s, 'hist'):
+                rec['systems'][s.name]['hist'] = {str(k): v for k, v in sorted(s.hist.items())}
+        with open(a.json, 'a') as f:
+            f.write(json.dumps(rec) + '\n')
     for s in systems:
         r = s.report()
         line = f'{s.name:>9}: stored={fmt(r["stored"]):>9} ratio={r["ratio"]:.4f} meta={fmt(r["meta"]):>9} ({r["meta_pct"]:.3f}%)'
-        for k in ('index', 'slices', 'slices_per_64k', 'blocks', 'chunks', 'refs', 'entries_per_64k', 'miss_rate', 'rescued_of_misses', 'walks_per_miss', 'lookups_per_block', 'cands_per_block', 'walks_per_block', 'false_per_block'):
+        for k in ('index', 'slices', 'slices_per_64k', 'blocks', 'chunks', 'refs', 'entries_per_64k', 'miss_rate', 'rescued_of_misses', 'cv_rescued_of_misses', 'cv_index_entries', 'walks_per_miss', 'lookups_per_block', 'cands_per_block', 'walks_per_block', 'false_per_block'):
             if k in r:
                 v = r[k]; line += f' {k}={v:.2f}' if isinstance(v, float) else f' {k}={v}'
         print(line)

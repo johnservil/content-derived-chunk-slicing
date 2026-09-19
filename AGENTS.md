@@ -69,5 +69,6 @@ Use exactly these terms in code, comments, docs, and conversation.
 
 # Project Files
 
+- `STATUS.md` — **read first when resuming**: where we are, measured numbers, what to run next.
 - `DESIGN.md` — current design, decisions, costs, open questions. Read it before design or coding work.
 - `REJECTED.md` — alternatives we considered and set aside, one line each with the reason. Consult it only when someone proposes an alternative; leave it out of routine reading.
