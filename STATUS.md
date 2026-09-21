@@ -1,6 +1,6 @@
 # STATUS — read this first when resuming
 
-Last updated: 2026-09-19 (end of session; VM being restarted with more RAM).
+Last updated: 2026-09-21 (VM now has 16 GB; nars 8 KiB run completed).
 
 ## Where we are
 
@@ -32,13 +32,14 @@ bytes; pangomm: 280 B for 122).
 
 Nars corpus (17 packages × 4 nixos releases, 1.0 GiB, real version changes):
 
-| avg chunk | cdc | cdc+slices |
-|---|---|---|
-| 8 KiB  | 0.675 | 0.632 (older miss handler; rerun needed) |
-| 64 KiB | 0.764 | **0.644** |
+| avg chunk | cdc | cdc+slices | entries/64 KiB (cdc → +slices) | metadata |
+|---|---|---|---|---|
+| 8 KiB  | 0.675 | **0.603** | 8.0 → 8.9 | 0.32% → 0.51% |
+| 64 KiB | 0.764 | **0.644** | 1.0 → 3.7 | 0.04% → 0.22% |
 
-The 8 KiB nars run of the current code was OOM-killed on the 1 GB VM. **First task after restart:**
-`pypy3 bench.py data/nars --no-baselines --systems cdcs,cdc --cdc-avg 8192 --json results.jsonl`.
+The 8 KiB run took 138 s on the 16 GB VM. Answer to DESIGN.md open question 1: **cdc+slices at 64 KiB
+(0.644) beats plain cdc at 8 KiB (0.675) on nars, and matches it on rebuild (0.470 vs 0.450) with
+1.4 entries/64 KiB instead of 8.** Coarse chunks plus slices dominate fine chunks alone.
 
 ## What made the difference (so we do not re-learn it)
 
