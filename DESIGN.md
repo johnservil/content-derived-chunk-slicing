@@ -16,7 +16,7 @@ differ.
 
 ## Components
 
-1. **Chunker.** Gear rolling hash, min/avg/max = avg/4 / avg / min(64 KiB, 8·avg). Unchanged from
+1. **Chunker.** Gear rolling hash, min/avg/max = avg/4 / avg / 8·avg. Unchanged from
    the competitor. Average size is the main open knob (see Results).
 2. **Chunk store.** Content-addressed by BLAKE3, one refcount per chunk. Unchanged.
 3. **Manifest.** Ordered entries, each either a whole-chunk reference or a slice

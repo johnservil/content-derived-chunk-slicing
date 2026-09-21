@@ -1,0 +1,205 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Content-Derived Chunk Slicing — results</title><style>body{font-family:sans-serif;max-width:900px;margin:2em auto;line-height:1.45;color:#222}table{border-collapse:collapse;margin:1em 0}td,th{border:1px solid #ccc;padding:4px 10px;text-align:right}th{background:#f3f3f3}td:first-child,th:first-child,td:nth-child(2),th:nth-child(2){text-align:left}.charts{display:flex;flex-wrap:wrap;gap:12px}b.win{color:#0a7}code{background:#f3f3f3;padding:1px 4px}</style></head><body>
+<h1>Content-Derived Chunk Slicing — measured results</h1>
+<p><b>Idea.</b> Keep classic content-defined chunking with BLAKE3 chunk ids in a content-addressed store, and add one manifest entry type: a <b>slice</b> <code>(chunk hash, offset, len)</code> that references a byte range of a stored chunk. When an incoming chunk misses the store, compare it against the stored chunks that its neighbouring hits point at, emit slices for the equal runs, and store only the differing bytes. Full explanation in <code>README.md</code>; design record in <code>DESIGN.md</code>.</p>
+<p><b>Ratio</b> = bytes stored ÷ bytes ingested over the whole corpus (lower is better). <b>Metadata</b> counts 36 B per stored chunk, 16 B per whole-chunk reference, 20 B per slice. <b>Entries per 64 KiB</b> = manifest entries per 64 KiB of file, i.e. range reads per 64 KiB reconstructed.</p>
+<h2>Results</h2><table><tr><th>corpus</th><th>avg chunk</th><th>cdc</th><th>cdc + slices</th><th>gain</th><th>entries / 64 KiB</th><th>metadata</th><th>miss rate</th><th>run time</th></tr>
+<tr><td>rebuild</td><td>8 KiB</td><td>0.450</td><td><b class="win">0.430</b></td><td>−2.1 pts</td><td>8.0 → 6.0</td><td>0.26% → 0.28%</td><td>55%</td><td>25 s</td></tr>
+<tr><td>rebuild</td><td>64 KiB</td><td>0.519</td><td><b class="win">0.472</b></td><td>−4.6 pts</td><td>1.0 → 1.4</td><td>0.03% → 0.06%</td><td>58%</td><td>23 s</td></tr>
+<tr><td>rebuild</td><td>256 KiB</td><td>0.600</td><td><b class="win">0.546</b></td><td>−5.4 pts</td><td>0.2 → 0.7</td><td>0.01% → 0.02%</td><td>64%</td><td>23 s</td></tr>
+<tr><td>nars</td><td>8 KiB</td><td>0.675</td><td><b class="win">0.603</b></td><td>−7.2 pts</td><td>8.0 → 8.9</td><td>0.32% → 0.45%</td><td>70%</td><td>135 s</td></tr>
+<tr><td>nars</td><td>64 KiB</td><td>0.764</td><td><b class="win">0.644</b></td><td>−12.0 pts</td><td>1.0 → 3.7</td><td>0.04% → 0.16%</td><td>79%</td><td>142 s</td></tr>
+<tr><td>nars</td><td>256 KiB</td><td>0.823</td><td><b class="win">0.684</b></td><td>−13.9 pts</td><td>0.2 → 3.0</td><td>0.01% → 0.13%</td><td>84%</td><td>132 s</td></tr>
+</table>
+<p><b>rebuild</b>: 20 packages, before and after one nixos-25.05 mass rebuild (240 MiB). Same sources, same versions; only store-path hashes inside the binaries change.</p>
+<p><b>nars</b>: 17 packages across four NixOS releases 23.11 → 25.05 (1.0 GiB). Real version upgrades.</p>
+<h2>Charts</h2><div class="charts">
+<svg viewBox="0 0 420 260" width="420" height="260" font-family="sans-serif" font-size="11">
+<text x="210.0" y="16" text-anchor="middle" font-size="13" font-weight="bold">rebuild: storage ratio</text>
+<line x1="56" y1="220.0" x2="404" y2="220.0" stroke="#ddd"/>
+<text x="50" y="224.0" text-anchor="end">0.30</text>
+<line x1="56" y1="181.6" x2="404" y2="181.6" stroke="#ddd"/>
+<text x="50" y="185.6" text-anchor="end">0.42</text>
+<line x1="56" y1="143.2" x2="404" y2="143.2" stroke="#ddd"/>
+<text x="50" y="147.2" text-anchor="end">0.54</text>
+<line x1="56" y1="104.8" x2="404" y2="104.8" stroke="#ddd"/>
+<text x="50" y="108.8" text-anchor="end">0.66</text>
+<line x1="56" y1="66.4" x2="404" y2="66.4" stroke="#ddd"/>
+<text x="50" y="70.4" text-anchor="end">0.78</text>
+<line x1="56" y1="28.0" x2="404" y2="28.0" stroke="#ddd"/>
+<text x="50" y="32.0" text-anchor="end">0.90</text>
+<line x1="56" y1="28" x2="56" y2="220" stroke="#333"/>
+<line x1="56" y1="220" x2="404" y2="220" stroke="#333"/>
+<text x="114.0" y="236" text-anchor="middle">8 KiB</text>
+<text x="230.0" y="236" text-anchor="middle">64 KiB</text>
+<text x="346.0" y="236" text-anchor="middle">256 KiB</text>
+<text x="210.0" y="256" text-anchor="middle">average chunk size</text>
+<text transform="translate(12,124.0) rotate(-90)" text-anchor="middle">stored / ingested</text>
+<path d="M114.0,171.9 L230.0,150.0 L346.0,124.1" fill="none" stroke="#c33" stroke-width="2"/>
+<circle cx="114.0" cy="171.9" r="3.5" fill="#c33"/>
+<text x="114.0" y="163.9" text-anchor="middle" fill="#c33">0.45</text>
+<circle cx="230.0" cy="150.0" r="3.5" fill="#c33"/>
+<text x="230.0" y="142.0" text-anchor="middle" fill="#c33">0.52</text>
+<circle cx="346.0" cy="124.1" r="3.5" fill="#c33"/>
+<text x="346.0" y="116.1" text-anchor="middle" fill="#c33">0.60</text>
+<path d="M114.0,178.5 L230.0,164.8 L346.0,141.3" fill="none" stroke="#0a7" stroke-width="2"/>
+<circle cx="114.0" cy="178.5" r="3.5" fill="#0a7"/>
+<text x="114.0" y="170.5" text-anchor="middle" fill="#0a7">0.43</text>
+<circle cx="230.0" cy="164.8" r="3.5" fill="#0a7"/>
+<text x="230.0" y="156.8" text-anchor="middle" fill="#0a7">0.47</text>
+<circle cx="346.0" cy="141.3" r="3.5" fill="#0a7"/>
+<text x="346.0" y="133.3" text-anchor="middle" fill="#0a7">0.55</text>
+<line x1="64" y1="38" x2="82" y2="38" stroke="#c33" stroke-width="2"/>
+<text x="88" y="42">cdc</text>
+<line x1="64" y1="54" x2="82" y2="54" stroke="#0a7" stroke-width="2"/>
+<text x="88" y="58">cdc + slices</text>
+</svg>
+<svg viewBox="0 0 420 260" width="420" height="260" font-family="sans-serif" font-size="11">
+<text x="210.0" y="16" text-anchor="middle" font-size="13" font-weight="bold">nars: storage ratio</text>
+<line x1="56" y1="220.0" x2="404" y2="220.0" stroke="#ddd"/>
+<text x="50" y="224.0" text-anchor="end">0.30</text>
+<line x1="56" y1="181.6" x2="404" y2="181.6" stroke="#ddd"/>
+<text x="50" y="185.6" text-anchor="end">0.42</text>
+<line x1="56" y1="143.2" x2="404" y2="143.2" stroke="#ddd"/>
+<text x="50" y="147.2" text-anchor="end">0.54</text>
+<line x1="56" y1="104.8" x2="404" y2="104.8" stroke="#ddd"/>
+<text x="50" y="108.8" text-anchor="end">0.66</text>
+<line x1="56" y1="66.4" x2="404" y2="66.4" stroke="#ddd"/>
+<text x="50" y="70.4" text-anchor="end">0.78</text>
+<line x1="56" y1="28.0" x2="404" y2="28.0" stroke="#ddd"/>
+<text x="50" y="32.0" text-anchor="end">0.90</text>
+<line x1="56" y1="28" x2="56" y2="220" stroke="#333"/>
+<line x1="56" y1="220" x2="404" y2="220" stroke="#333"/>
+<text x="114.0" y="236" text-anchor="middle">8 KiB</text>
+<text x="230.0" y="236" text-anchor="middle">64 KiB</text>
+<text x="346.0" y="236" text-anchor="middle">256 KiB</text>
+<text x="210.0" y="256" text-anchor="middle">average chunk size</text>
+<text transform="translate(12,124.0) rotate(-90)" text-anchor="middle">stored / ingested</text>
+<path d="M114.0,100.0 L230.0,71.5 L346.0,52.7" fill="none" stroke="#c33" stroke-width="2"/>
+<circle cx="114.0" cy="100.0" r="3.5" fill="#c33"/>
+<text x="114.0" y="92.0" text-anchor="middle" fill="#c33">0.68</text>
+<circle cx="230.0" cy="71.5" r="3.5" fill="#c33"/>
+<text x="230.0" y="63.5" text-anchor="middle" fill="#c33">0.76</text>
+<circle cx="346.0" cy="52.7" r="3.5" fill="#c33"/>
+<text x="346.0" y="44.7" text-anchor="middle" fill="#c33">0.82</text>
+<path d="M114.0,123.0 L230.0,110.1 L346.0,97.1" fill="none" stroke="#0a7" stroke-width="2"/>
+<circle cx="114.0" cy="123.0" r="3.5" fill="#0a7"/>
+<text x="114.0" y="115.0" text-anchor="middle" fill="#0a7">0.60</text>
+<circle cx="230.0" cy="110.1" r="3.5" fill="#0a7"/>
+<text x="230.0" y="102.1" text-anchor="middle" fill="#0a7">0.64</text>
+<circle cx="346.0" cy="97.1" r="3.5" fill="#0a7"/>
+<text x="346.0" y="89.1" text-anchor="middle" fill="#0a7">0.68</text>
+<line x1="64" y1="38" x2="82" y2="38" stroke="#c33" stroke-width="2"/>
+<text x="88" y="42">cdc</text>
+<line x1="64" y1="54" x2="82" y2="54" stroke="#0a7" stroke-width="2"/>
+<text x="88" y="58">cdc + slices</text>
+</svg>
+<svg viewBox="0 0 420 260" width="420" height="260" font-family="sans-serif" font-size="11">
+<text x="210.0" y="16" text-anchor="middle" font-size="13" font-weight="bold">rebuild: manifest entries per 64 KiB</text>
+<line x1="56" y1="220.0" x2="404" y2="220.0" stroke="#ddd"/>
+<text x="50" y="224.0" text-anchor="end">0.0</text>
+<line x1="56" y1="181.6" x2="404" y2="181.6" stroke="#ddd"/>
+<text x="50" y="185.6" text-anchor="end">2.0</text>
+<line x1="56" y1="143.2" x2="404" y2="143.2" stroke="#ddd"/>
+<text x="50" y="147.2" text-anchor="end">4.0</text>
+<line x1="56" y1="104.8" x2="404" y2="104.8" stroke="#ddd"/>
+<text x="50" y="108.8" text-anchor="end">6.0</text>
+<line x1="56" y1="66.4" x2="404" y2="66.4" stroke="#ddd"/>
+<text x="50" y="70.4" text-anchor="end">8.0</text>
+<line x1="56" y1="28.0" x2="404" y2="28.0" stroke="#ddd"/>
+<text x="50" y="32.0" text-anchor="end">10.0</text>
+<line x1="56" y1="28" x2="56" y2="220" stroke="#333"/>
+<line x1="56" y1="220" x2="404" y2="220" stroke="#333"/>
+<text x="114.0" y="236" text-anchor="middle">8 KiB</text>
+<text x="230.0" y="236" text-anchor="middle">64 KiB</text>
+<text x="346.0" y="236" text-anchor="middle">256 KiB</text>
+<text x="210.0" y="256" text-anchor="middle">average chunk size</text>
+<text transform="translate(12,124.0) rotate(-90)" text-anchor="middle">range reads / 64 KiB</text>
+<path d="M114.0,66.4 L230.0,200.8 L346.0,215.2" fill="none" stroke="#c33" stroke-width="2"/>
+<circle cx="114.0" cy="66.4" r="3.5" fill="#c33"/>
+<text x="114.0" y="58.4" text-anchor="middle" fill="#c33">8.0</text>
+<circle cx="230.0" cy="200.8" r="3.5" fill="#c33"/>
+<text x="230.0" y="192.8" text-anchor="middle" fill="#c33">1.0</text>
+<circle cx="346.0" cy="215.2" r="3.5" fill="#c33"/>
+<text x="346.0" y="207.2" text-anchor="middle" fill="#c33">0.2</text>
+<path d="M114.0,103.9 L230.0,193.6 L346.0,207.0" fill="none" stroke="#0a7" stroke-width="2"/>
+<circle cx="114.0" cy="103.9" r="3.5" fill="#0a7"/>
+<text x="114.0" y="95.9" text-anchor="middle" fill="#0a7">6.0</text>
+<circle cx="230.0" cy="193.6" r="3.5" fill="#0a7"/>
+<text x="230.0" y="185.6" text-anchor="middle" fill="#0a7">1.4</text>
+<circle cx="346.0" cy="207.0" r="3.5" fill="#0a7"/>
+<text x="346.0" y="199.0" text-anchor="middle" fill="#0a7">0.7</text>
+<line x1="64" y1="38" x2="82" y2="38" stroke="#c33" stroke-width="2"/>
+<text x="88" y="42">cdc</text>
+<line x1="64" y1="54" x2="82" y2="54" stroke="#0a7" stroke-width="2"/>
+<text x="88" y="58">cdc + slices</text>
+</svg>
+<svg viewBox="0 0 420 260" width="420" height="260" font-family="sans-serif" font-size="11">
+<text x="210.0" y="16" text-anchor="middle" font-size="13" font-weight="bold">nars: manifest entries per 64 KiB</text>
+<line x1="56" y1="220.0" x2="404" y2="220.0" stroke="#ddd"/>
+<text x="50" y="224.0" text-anchor="end">0.0</text>
+<line x1="56" y1="181.6" x2="404" y2="181.6" stroke="#ddd"/>
+<text x="50" y="185.6" text-anchor="end">2.0</text>
+<line x1="56" y1="143.2" x2="404" y2="143.2" stroke="#ddd"/>
+<text x="50" y="147.2" text-anchor="end">4.0</text>
+<line x1="56" y1="104.8" x2="404" y2="104.8" stroke="#ddd"/>
+<text x="50" y="108.8" text-anchor="end">6.0</text>
+<line x1="56" y1="66.4" x2="404" y2="66.4" stroke="#ddd"/>
+<text x="50" y="70.4" text-anchor="end">8.0</text>
+<line x1="56" y1="28.0" x2="404" y2="28.0" stroke="#ddd"/>
+<text x="50" y="32.0" text-anchor="end">10.0</text>
+<line x1="56" y1="28" x2="56" y2="220" stroke="#333"/>
+<line x1="56" y1="220" x2="404" y2="220" stroke="#333"/>
+<text x="114.0" y="236" text-anchor="middle">8 KiB</text>
+<text x="230.0" y="236" text-anchor="middle">64 KiB</text>
+<text x="346.0" y="236" text-anchor="middle">256 KiB</text>
+<text x="210.0" y="256" text-anchor="middle">average chunk size</text>
+<text transform="translate(12,124.0) rotate(-90)" text-anchor="middle">range reads / 64 KiB</text>
+<path d="M114.0,66.4 L230.0,200.8 L346.0,215.2" fill="none" stroke="#c33" stroke-width="2"/>
+<circle cx="114.0" cy="66.4" r="3.5" fill="#c33"/>
+<text x="114.0" y="58.4" text-anchor="middle" fill="#c33">8.0</text>
+<circle cx="230.0" cy="200.8" r="3.5" fill="#c33"/>
+<text x="230.0" y="192.8" text-anchor="middle" fill="#c33">1.0</text>
+<circle cx="346.0" cy="215.2" r="3.5" fill="#c33"/>
+<text x="346.0" y="207.2" text-anchor="middle" fill="#c33">0.2</text>
+<path d="M114.0,48.6 L230.0,149.3 L346.0,163.1" fill="none" stroke="#0a7" stroke-width="2"/>
+<circle cx="114.0" cy="48.6" r="3.5" fill="#0a7"/>
+<text x="114.0" y="40.6" text-anchor="middle" fill="#0a7">8.9</text>
+<circle cx="230.0" cy="149.3" r="3.5" fill="#0a7"/>
+<text x="230.0" y="141.3" text-anchor="middle" fill="#0a7">3.7</text>
+<circle cx="346.0" cy="163.1" r="3.5" fill="#0a7"/>
+<text x="346.0" y="155.1" text-anchor="middle" fill="#0a7">3.0</text>
+<line x1="64" y1="38" x2="82" y2="38" stroke="#c33" stroke-width="2"/>
+<text x="88" y="42">cdc</text>
+<line x1="64" y1="54" x2="82" y2="54" stroke="#0a7" stroke-width="2"/>
+<text x="88" y="58">cdc + slices</text>
+</svg>
+</div>
+<h2>Slice lengths at 64 KiB</h2><p>Share of slices and of sliced bytes by slice length. Long slices carry the bytes; <code>minslice</code> = 256 B bounds the entry count.</p>
+<table><tr><th colspan="3">rebuild</th></tr><tr><th>slice length</th><th>slices</th><th>bytes</th></tr>
+<tr><td>256 – 511</td><td>21.4%</td><td>1.0%</td></tr>
+<tr><td>512 – 1,023</td><td>30.8%</td><td>3.0%</td></tr>
+<tr><td>1,024 – 2,047</td><td>24.0%</td><td>4.0%</td></tr>
+<tr><td>2,048 – 4,095</td><td>8.3%</td><td>2.9%</td></tr>
+<tr><td>4,096 – 8,191</td><td>3.1%</td><td>2.1%</td></tr>
+<tr><td>8,192 – 16,383</td><td>2.0%</td><td>2.8%</td></tr>
+<tr><td>16,384 – 32,767</td><td>2.8%</td><td>8.3%</td></tr>
+<tr><td>32,768 – 65,535</td><td>4.2%</td><td>24.8%</td></tr>
+<tr><td>65,536 – 131,071</td><td>2.7%</td><td>29.9%</td></tr>
+<tr><td>131,072 – 262,143</td><td>0.6%</td><td>12.6%</td></tr>
+<tr><td>262,144 – 524,287</td><td>0.2%</td><td>8.6%</td></tr>
+</table>
+<table><tr><th colspan="3">nars</th></tr><tr><th>slice length</th><th>slices</th><th>bytes</th></tr>
+<tr><td>256 – 511</td><td>33.3%</td><td>2.0%</td></tr>
+<tr><td>512 – 1,023</td><td>20.3%</td><td>2.4%</td></tr>
+<tr><td>1,024 – 2,047</td><td>14.2%</td><td>3.5%</td></tr>
+<tr><td>2,048 – 4,095</td><td>10.4%</td><td>4.9%</td></tr>
+<tr><td>4,096 – 8,191</td><td>7.1%</td><td>6.7%</td></tr>
+<tr><td>8,192 – 16,383</td><td>5.7%</td><td>11.0%</td></tr>
+<tr><td>16,384 – 32,767</td><td>3.9%</td><td>14.7%</td></tr>
+<tr><td>32,768 – 65,535</td><td>4.0%</td><td>31.2%</td></tr>
+<tr><td>65,536 – 131,071</td><td>0.9%</td><td>12.4%</td></tr>
+<tr><td>131,072 – 262,143</td><td>0.2%</td><td>6.7%</td></tr>
+<tr><td>262,144 – 524,287</td><td>0.1%</td><td>4.6%</td></tr>
+</table>
+<h2>Reproduce</h2><p><code>./reproduce.sh</code> fetches the corpus listed in <code>corpus.txt</code> (each NAR verified by sha256 against its <code>.narinfo</code>), runs <code>bench.py</code> for every cell above, and renders this page. The Python is the readable specification of the algorithm.</p>
+</body></html>

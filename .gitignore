@@ -2,3 +2,5 @@
 data/
 __pycache__/
 *.pyc
+ghtokenclassic.txt
+bench.err
