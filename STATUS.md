@@ -20,9 +20,9 @@ Rebuild corpus (20 before/after NAR pairs, one nixos-25.05 mass rebuild, 240 MiB
 
 | avg chunk | cdc | cdc+slices | entries/64 KiB (cdc → +slices) | metadata |
 |---|---|---|---|---|
-| 8 KiB   | 0.450 | **0.430** | 8.0 → 6.1 | 0.26% → 0.32% |
-| 64 KiB  | 0.519 | **0.470** | 1.0 → 1.4 | 0.03% → 0.09% |
-| 256 KiB | 0.600 | **0.531** | 0.3 → 0.8 | 0.01% → 0.07% |
+| 8 KiB   | 0.450 | **0.430** | 8.0 → 6.0 | 0.26% → 0.28% |
+| 64 KiB  | 0.519 | **0.472** | 1.0 → 1.4 | 0.03% → 0.06% |
+| 256 KiB | 0.600 | **0.546** | 0.2 → 0.7 | 0.01% → 0.02% |
 
 Of the 10.4 MiB stored for the 20 "after" files at 64 KiB, 9.3 MiB is one pair (nvidia-open): five
 `.ko.xz` kernel modules, i.e. **xz-compressed content, unmatchable by anyone** (0.4% of bytes agree
@@ -34,12 +34,16 @@ Nars corpus (17 packages × 4 nixos releases, 1.0 GiB, real version changes):
 
 | avg chunk | cdc | cdc+slices | entries/64 KiB (cdc → +slices) | metadata |
 |---|---|---|---|---|
-| 8 KiB  | 0.675 | **0.603** | 8.0 → 8.9 | 0.32% → 0.51% |
-| 64 KiB | 0.764 | **0.644** | 1.0 → 3.7 | 0.04% → 0.22% |
+| 8 KiB   | 0.675 | **0.603** | 8.0 → 8.9 | 0.32% → 0.45% |
+| 64 KiB  | 0.764 | **0.644** | 1.0 → 3.7 | 0.04% → 0.16% |
+| 256 KiB | 0.823 | **0.684** | 0.2 → 3.0 | 0.01% → 0.13% |
 
-The 8 KiB run took 138 s on the 16 GB VM. Answer to DESIGN.md open question 1: **cdc+slices at 64 KiB
-(0.644) beats plain cdc at 8 KiB (0.675) on nars, and matches it on rebuild (0.470 vs 0.450) with
-1.4 entries/64 KiB instead of 8.** Coarse chunks plus slices dominate fine chunks alone.
+Sweep complete 2026-09-21; all six rows come from the same code (CV candidates removed). Nars runs
+take ~135 s on the 16 GB VM. Answer to DESIGN.md open question 1: **cdc+slices at 64 KiB (0.644)
+beats plain cdc at 8 KiB (0.675) on nars, and lands within 2 points on rebuild (0.472 vs 0.450) with
+1.4 entries/64 KiB instead of 8 and a quarter of the metadata.** Going from 8 KiB to 256 KiB costs
+plain cdc 15 points on both corpora; cdc+slices loses 8 (nars) and 12 (rebuild). Recommendation:
+**64 KiB**; the step to 256 KiB gives up 4–7 points for a further 2–3× metadata saving.
 
 ## What made the difference (so we do not re-learn it)
 

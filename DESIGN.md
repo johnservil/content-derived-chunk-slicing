@@ -42,13 +42,16 @@ Two real corpora from cache.nixos.org:
   19 of 20 pairs are byte-identical in length; changes are 32-char store-path rewrites.
 - **nars** — 17 packages × 4 releases 23.11 → 25.05 (1.1 GiB): real version changes.
 
-| corpus | system | ratio | metadata |
-|---|---|---|---|
-| rebuild | cdc 8 KiB | 0.450 | 0.26% |
-| rebuild | **cdc 8 KiB + slices** | **0.436** | 0.27% |
-| rebuild | fixed 64 KiB | 0.590 | 0.06% |
-| nars | cdc 8 KiB | 0.675 | 0.32% |
-| nars | fixed 64 KiB | 0.968 | 0.08% |
+| corpus | avg chunk | cdc | cdc+slices | entries/64 KiB (cdc → +slices) | metadata |
+|---|---|---|---|---|---|
+| rebuild | 8 KiB   | 0.450 | **0.430** | 8.0 → 6.0 | 0.26% → 0.28% |
+| rebuild | 64 KiB  | 0.519 | **0.472** | 1.0 → 1.4 | 0.03% → 0.06% |
+| rebuild | 256 KiB | 0.600 | **0.546** | 0.2 → 0.7 | 0.01% → 0.02% |
+| nars    | 8 KiB   | 0.675 | **0.603** | 8.0 → 8.9 | 0.32% → 0.45% |
+| nars    | 64 KiB  | 0.764 | **0.644** | 1.0 → 3.7 | 0.04% → 0.16% |
+| nars    | 256 KiB | 0.823 | **0.684** | 0.2 → 3.0 | 0.01% → 0.13% |
+
+(Fixed 64 KiB blocks, for orientation: rebuild 0.590, nars 0.968.)
 
 Interpretation:
 - On rebuild data, 87% of 8 KiB chunks hit exactly; only 13% miss and most misses are isolated.
@@ -61,7 +64,10 @@ Interpretation:
 - **The expected payoff of slices is coarser chunks, not a finer ratio at 8 KiB.** The competitor's
   cost of 8 KiB chunks is metadata and reads (colleague's numbers: 55 MiB metadata / 1.5 M refs at
   8 KiB vs 1.6 MiB / 164 k at 256 KiB). Slices make an edit cost ~300 B instead of one whole chunk,
-  which should let chunk size rise to 64–256 KiB with little ratio loss. **Not yet measured.**
+  so chunk size can rise. **Measured:** cdc+slices at 64 KiB beats cdc at 8 KiB on nars (0.644 vs
+  0.675) and is within 2 points on rebuild, with a quarter of the metadata and 1.4–3.7 manifest
+  entries per 64 KiB. From 8 KiB to 256 KiB, cdc loses 15 points on both corpora; cdc+slices loses
+  8–12. **Recommendation: 64 KiB.**
 
 Colleague's table (his data, algorithms unknown), for orientation:
 exact/256KiB 1581 MiB, 1.6 MiB meta · exact/8KiB 1311 MiB, 55 MiB meta ·
@@ -79,9 +85,7 @@ exact/1KiB 1551 MiB, 450 MiB meta · slices/1KiB/4 1047 MiB, 3.3 MiB meta.
 
 ## Open questions, in priority order
 
-1. **Chunk size with slices.** Run `--cdc-avg 65536` (and 262144) for both cdc and cdc+slices on
-   both corpora. Hypothesis: cdc's ratio degrades toward fixed-block levels while cdc+slices holds,
-   at 8–30× less metadata. This is the chart for the colleague.
+1. ~~Chunk size with slices.~~ Answered (see Results): 64 KiB.
 2. **Shifted-content finder for long miss runs** (the nvidia case). A second, optional mechanism:
    index content-defined segment hashes → (chunk, offset) so a miss with no hit neighbours can still
    locate its source at any shift. Measure how many bytes it addresses before building it.
