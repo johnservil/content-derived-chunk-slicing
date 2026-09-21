@@ -5,11 +5,11 @@ Contract: every record holds systems 'cdc' and 'cdc+slices'; one record per (cor
 """
 import json, sys, html
 
-CORPUS_LABEL = {'data/rebuild': 'rebuild', 'data/nars': 'nars'}
+CORPUS_LABEL = {'data/rebuild': 'rebuild', 'data/nars': 'releases'}
 CORPUS_DESC = {
     'rebuild': '20 packages, before and after one nixos-25.05 mass rebuild (240 MiB). Same sources, '
                'same versions; only store-path hashes inside the binaries change.',
-    'nars': '17 packages across four NixOS releases 23.11 → 25.05 (1.0 GiB). Real version upgrades.',
+    'releases': '17 packages across four NixOS releases 23.11 → 25.05 (1.0 GiB). Real version upgrades.',
 }
 KIB = 1024
 
@@ -62,7 +62,7 @@ def svg_chart(title, series, ylabel, ymin, ymax, fmt):
 
 def main(results, out):
     recs = load(results)
-    corpora = ['rebuild', 'nars']
+    corpora = ['rebuild', 'releases']
     sizes = sorted({avg for _, avg in recs})
     size_label = lambda a: f'{a // KIB} KiB'
 
@@ -78,7 +78,7 @@ def main(results, out):
                  'references a byte range of a stored chunk. When an incoming chunk misses the store, compare it against '
                  'the stored chunks that its neighbouring hits point at, emit slices for the equal runs, and store only '
                  'the differing bytes. Full explanation in <code>README.md</code>; design record in <code>DESIGN.md</code>.</p>')
-    parts.append('<p><b>Ratio</b> = bytes stored ÷ bytes ingested over the whole corpus (lower is better). '
+    parts.append('<p><b>Compression ratio</b> = bytes the store holds ÷ bytes ingested, over the whole corpus (lower is better). '
                  '<b>Metadata</b> counts 36 B per stored chunk, 16 B per whole-chunk reference, 20 B per slice. '
                  '<b>Entries per 64 KiB</b> = manifest entries per 64 KiB of file, i.e. range reads per 64 KiB reconstructed.</p>')
 

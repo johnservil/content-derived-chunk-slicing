@@ -1,7 +1,10 @@
 # Content-Derived Chunk Slicing
 
-A CDC store with one extra manifest entry type. Chunks grow from 8 KiB to 64 KiB and the store
-holds fewer bytes.
+A CDC store with one extra manifest entry type. Chunks grow from 8 KiB to 64 KiB and the
+compression ratio improves.
+
+Throughout, **compression ratio** means bytes the store holds divided by bytes ingested, over a
+whole corpus. 0.50 means the store holds half of what it took in; lower is better.
 
 ## Idea
 
@@ -18,21 +21,30 @@ first, so a run of edited chunks walks the old file alongside the new one.
 
 ## Results
 
-Two corpora from cache.nixos.org, pinned in `corpus.txt`: 20 packages before and after one
-nixos-25.05 mass rebuild (240 MiB), and 17 packages across four NixOS releases (1.0 GiB). Ratio is
-stored bytes over ingested bytes; entries are manifest entries per 64 KiB of file.
+Two corpora of NixOS package archives (NAR files) from cache.nixos.org, pinned in `corpus.txt`:
 
-| corpus  | avg chunk | cdc   | cdc + slices | entries / 64 KiB |
-|---------|-----------|-------|--------------|------------------|
-| rebuild | 8 KiB     | 0.450 | **0.430**    | 8.0 → 6.0        |
-| rebuild | 64 KiB    | 0.519 | **0.472**    | 1.0 → 1.4        |
-| rebuild | 256 KiB   | 0.600 | **0.546**    | 0.2 → 0.7        |
-| nars    | 8 KiB     | 0.675 | **0.603**    | 8.0 → 8.9        |
-| nars    | 64 KiB    | 0.764 | **0.644**    | 1.0 → 3.7        |
-| nars    | 256 KiB   | 0.823 | **0.684**    | 0.2 → 3.0        |
+- **rebuild** — 20 packages, each before and after one nixos-25.05 mass rebuild (240 MiB). Same
+  source, same version; the binaries differ in embedded store-path hashes.
+- **releases** — 17 packages across four NixOS releases, 23.11 to 25.05 (1.0 GiB). Real version
+  upgrades.
 
-At 64 KiB with slices the store holds fewer bytes than plain CDC at 8 KiB (0.644 vs 0.675 on the
-release corpus) with a quarter of the manifest entries. We recommend 64 KiB.
+Each row ingests one corpus file by file with a plain CDC store (`cdc`) and with the same store plus
+slices (`cdc + slices`).
+
+| corpus   | avg chunk | cdc   | cdc + slices | entries / 64 KiB |
+|----------|-----------|-------|--------------|------------------|
+| rebuild  | 8 KiB     | 0.450 | **0.430**    | 8.0 → 6.0        |
+| rebuild  | 64 KiB    | 0.519 | **0.472**    | 1.0 → 1.4        |
+| rebuild  | 256 KiB   | 0.600 | **0.546**    | 0.2 → 0.7        |
+| releases | 8 KiB     | 0.675 | **0.603**    | 8.0 → 8.9        |
+| releases | 64 KiB    | 0.764 | **0.644**    | 1.0 → 3.7        |
+| releases | 256 KiB   | 0.823 | **0.684**    | 0.2 → 3.0        |
+
+`cdc` and `cdc + slices` columns: compression ratio. `entries / 64 KiB`: manifest entries per
+64 KiB of file, plain CDC → with slices; one range read per entry when reading the file back.
+
+At 64 KiB with slices, the releases corpus compresses to 0.644, below plain CDC at 8 KiB (0.675),
+with a quarter of the manifest entries.
 
 ## Reproduce
 
