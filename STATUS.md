@@ -47,9 +47,9 @@ The 8 KiB run took 138 s on the 16 GB VM. Answer to DESIGN.md open question 1: *
    **carrying the source forward across misses**: after a chunk is resolved by slices against stored
    chunk *s*, the next miss tries *s+1* first (variable `last_source`). Without this, at 64 KiB most
    misses had no hit neighbour and stored the whole chunk.
-2. BLAKE3 aligned-region CVs as candidates (`use_cv`) rescued 0–5% of misses — nearly irrelevant once
-   (1) exists. Kept in the code, off by default is NOT the case: `cdcs` = with CV, `cdcs-nocv` = without.
-   Consider removing for simplicity.
+2. BLAKE3 aligned-region CVs as candidates rescued 0–5% of misses on rebuild and 0% on nars —
+   irrelevant once (1) exists. **Removed 2026-09-21** (see REJECTED.md); rebuild 64 KiB moved
+   0.470 → 0.472.
 3. `minslice` knee is 256 B (sweep on systemd: 32→219 entries/64 KiB, 128→28, 256→15, 512→15, 1024→5).
 4. On rebuild data 81% of aligned 64 KiB regions are byte-identical at the same offset; 87% of 8 KiB
    chunks hit exactly. CDC at 8 KiB is already near the floor there; the payoff of slices is being
@@ -78,7 +78,7 @@ runtime; the Python is the readable specification; a Rust port is the end state 
 
 - After VM restart: `bash scripts/guest-setup.sh` (clock, git config, pypy3, zstd, data). Then
   `export GIT_CONFIG_GLOBAL=/tmp/gitconfig` in each shell.
-- `bench.py --help`. Systems: `cdcs`, `cdcs-nocv`, `cdc`, plus the retired `hybrid`, `sliced`,
+- `bench.py --help`. Systems: `cdcs`, `cdc`, plus the retired `hybrid`, `sliced`,
   `sync`, and baseline `fixed64K` (via omitting `--no-baselines`). `--cdc-avg`, `--minslice`,
   `--only <substring>`, `--json <file>`.
 - Runs take 20–40 s on rebuild, 2–3 min on nars. Memory: gram tables for many small chunks need

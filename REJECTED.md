@@ -50,3 +50,9 @@ rejection here can be reopened with new evidence.
   survives as the miss handler's comparison step.
 - **Voting over anchor hits; multi-slot index entries; IDF-style popular-key suppression.** Wrinkles
   on a mechanism that was replaced.
+
+## Rejected 2026-09-21 (measured)
+
+- **BLAKE3 aligned-region CVs (64 KiB, position-keyed) as miss-handler candidates.** Rescued 0–5% of
+  misses on rebuild and 0% on nars once the carried source existed; removing it cost 0.2 ratio
+  points at 64 KiB on rebuild and deleted a second index plus a per-file layout table.

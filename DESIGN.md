@@ -28,10 +28,12 @@ differ.
    - Compare the missed chunk against each candidate: lockstep walk at shift 0 (they are aligned by
      construction, since the surrounding boundaries matched) plus an 8-gram LZ77 search for runs at
      other shifts. Equal runs ≥ `minslice` become slices; the rest is stored as new chunk(s).
+   - **Carry the source forward.** After a chunk resolves (by hit or by slices) to stored chunk *s*,
+     the next miss tries *s+1* first. This is what supplies candidates at coarse chunk sizes, where
+     most misses lack a hit neighbour.
    - No new index. No extra I/O beyond reading the candidate chunks (bounded by matched bytes).
-5. **BLAKE3 subtree dedup** (shared layer, applies equally to competitor and to us): the incoming
-   file's tree CVs at 64 KiB and up, indexed by CV → (file, offset), find unchanged aligned regions
-   at zero I/O. Credited to neither side in comparisons.
+
+That is the whole design: four components, one of them new.
 
 ## Results so far (bench.py, PyPy; see AGENTS.md for invocation)
 
